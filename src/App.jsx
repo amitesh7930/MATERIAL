@@ -199,6 +199,11 @@ export default function App() {
     return () => { unsubscribe(); unsubSettings(); };
   }, [user]);
 
+  const uniqueSheets = [...new Set(records.map(r => r.sheetName || 'Sheet1'))];
+  if (!uniqueSheets.includes(sheetName)) {
+    uniqueSheets.push(sheetName);
+  }
+
   let displayedRecords = viewMode === 'all' ? records : records.filter(r => (r.sheetName || 'Sheet1') === sheetName);
   if (filterMaterial) {
     displayedRecords = displayedRecords.filter(r => r.materialName === filterMaterial);
@@ -451,6 +456,35 @@ export default function App() {
           </div>
         </div>
 
+        {/* Sheet Tabs - Centered */}
+        <div className="flex justify-center flex-wrap gap-2 my-2">
+          <button
+            onClick={() => setViewMode('all')}
+            className={`px-5 py-2.5 rounded-full text-sm font-bold transition-all shadow-sm flex items-center ${viewMode === 'all' ? 'bg-purple-600 text-white ring-4 ring-purple-200' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'}`}
+          >
+            All Sheets
+            <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${viewMode === 'all' ? 'bg-white/20' : 'bg-slate-200 text-slate-500'}`}>{records.length}</span>
+          </button>
+
+          {uniqueSheets.map(s => {
+            const sheetRecordsCount = records.filter(r => (r.sheetName || 'Sheet1') === s).length;
+            return (
+              <button
+                key={s}
+                onClick={() => { setSheetName(s); setViewMode('current'); }}
+                className={`px-5 py-2.5 rounded-full text-sm font-bold transition-all shadow-sm flex items-center ${s === sheetName && viewMode === 'current' ? 'bg-blue-600 text-white ring-4 ring-blue-200' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'}`}
+              >
+                {s}
+                <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${s === sheetName && viewMode === 'current' ? 'bg-white/20' : 'bg-slate-200 text-slate-500'}`}>{sheetRecordsCount}</span>
+              </button>
+            );
+          })}
+
+          <button onClick={() => setShowSettings(true)} className="px-5 py-2.5 rounded-full text-sm font-bold transition-all shadow-sm bg-white text-blue-600 hover:bg-blue-50 border border-blue-200 flex items-center">
+            <PlusCircle className="w-4 h-4 mr-1" /> New Sheet
+          </button>
+        </div>
+
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
           {/* Left Column: AI Input & Forms */}
@@ -601,15 +635,6 @@ export default function App() {
                   {viewMode === 'all' ? 'Consolidated' : sheetName} Records
                   <span className="ml-3 bg-blue-100 text-blue-700 py-0.5 px-2.5 rounded-full text-xs font-bold">{displayedRecords.length}</span>
                 </h2>
-
-                <div className="flex bg-slate-100 p-1 rounded-lg">
-                  <button onClick={() => setViewMode('current')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${viewMode === 'current' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500 hover:text-slate-700'}`}>
-                    {sheetName}
-                  </button>
-                  <button onClick={() => setViewMode('all')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${viewMode === 'all' ? 'bg-white shadow-sm text-purple-600' : 'text-slate-500 hover:text-slate-700'}`}>
-                    All Sheets
-                  </button>
-                </div>
               </div>
 
               <div className="flex flex-wrap gap-2 w-full sm:w-auto items-center">
