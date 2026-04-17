@@ -58,7 +58,9 @@ const callGeminiAPI = async (systemInstruction, userText, expectJson = false) =>
 };
 
 export default function App() {
-  const [records, setRecords] = useState([]);
+  const [records, setRecords] = useState(() => {
+    try { const saved = localStorage.getItem('ohe_records'); return saved ? JSON.parse(saved) : []; } catch { return []; }
+  });
 
   const DEFAULT_MATERIALS = ['Contact Wire', 'Catenary Wire', 'Dropper Wire', 'Jumper Wire'];
   const DEFAULT_UNITS = ['Meters', "No's", 'kg', 'g', 'Ltr', 'ml', 'set'];
@@ -73,9 +75,15 @@ export default function App() {
     'RAKESH KUMAR ( Assistant)', 'BIRENDRA KUMAR ( Assistant)', 'RAJNISH KUMAR ( Assistant)'
   ];
 
-  const [materialsList, setMaterialsList] = useState(DEFAULT_MATERIALS);
-  const [unitsList, setUnitsList] = useState(DEFAULT_UNITS);
-  const [staffList, setStaffList] = useState(DEFAULT_STAFF);
+  const [materialsList, setMaterialsList] = useState(() => {
+    try { const saved = localStorage.getItem('ohe_materials'); return saved ? JSON.parse(saved) : DEFAULT_MATERIALS; } catch { return DEFAULT_MATERIALS; }
+  });
+  const [unitsList, setUnitsList] = useState(() => {
+    try { const saved = localStorage.getItem('ohe_units'); return saved ? JSON.parse(saved) : DEFAULT_UNITS; } catch { return DEFAULT_UNITS; }
+  });
+  const [staffList, setStaffList] = useState(() => {
+    try { const saved = localStorage.getItem('ohe_staff'); return saved ? JSON.parse(saved) : DEFAULT_STAFF; } catch { return DEFAULT_STAFF; }
+  });
 
   const [isManualDate, setIsManualDate] = useState(true);
   const [isMaterialFocused, setIsMaterialFocused] = useState(false);
@@ -96,8 +104,8 @@ export default function App() {
   const [user, setUser] = useState(null);
 
   const [showSettings, setShowSettings] = useState(false);
-  const [scriptUrl, setScriptUrl] = useState('https://script.google.com/macros/s/AKfycbxSHtyqZkdkC0nvSRCEBLebHOCcY3FVtVWRMbH8Yy6LFQ1_A4Y52lVarqM-nPIg8pZM/exec');
-  const [sheetName, setSheetName] = useState('Sheet1');
+  const [scriptUrl, setScriptUrl] = useState(() => localStorage.getItem('ohe_scriptUrl') || 'https://script.google.com/macros/s/AKfycbxSHtyqZkdkC0nvSRCEBLebHOCcY3FVtVWRMbH8Yy6LFQ1_A4Y52lVarqM-nPIg8pZM/exec');
+  const [sheetName, setSheetName] = useState(() => localStorage.getItem('ohe_sheetName') || 'Sheet1');
 
   const [viewMode, setViewMode] = useState('current');
   const [filterMaterial, setFilterMaterial] = useState('');
@@ -118,12 +126,22 @@ export default function App() {
     staffName: 'Staff Name'
   };
 
-  const [headers, setHeaders] = useState(defaultHeaders);
-  const [tempSettings, setTempSettings] = useState({
-    scriptUrl: 'https://script.google.com/macros/s/AKfycbxSHtyqZkdkC0nvSRCEBLebHOCcY3FVtVWRMbH8Yy6LFQ1_A4Y52lVarqM-nPIg8pZM/exec',
-    sheetName: 'Sheet1',
-    headers: defaultHeaders
+  const [headers, setHeaders] = useState(() => {
+    try { const saved = localStorage.getItem('ohe_headers'); return saved ? JSON.parse(saved) : defaultHeaders; } catch { return defaultHeaders; }
   });
+  const [tempSettings, setTempSettings] = useState({
+    scriptUrl,
+    sheetName,
+    headers
+  });
+
+  useEffect(() => { try { localStorage.setItem('ohe_records', JSON.stringify(records)); } catch { } }, [records]);
+  useEffect(() => { try { localStorage.setItem('ohe_materials', JSON.stringify(materialsList)); } catch { } }, [materialsList]);
+  useEffect(() => { try { localStorage.setItem('ohe_units', JSON.stringify(unitsList)); } catch { } }, [unitsList]);
+  useEffect(() => { try { localStorage.setItem('ohe_staff', JSON.stringify(staffList)); } catch { } }, [staffList]);
+  useEffect(() => { localStorage.setItem('ohe_scriptUrl', scriptUrl); }, [scriptUrl]);
+  useEffect(() => { localStorage.setItem('ohe_sheetName', sheetName); }, [sheetName]);
+  useEffect(() => { try { localStorage.setItem('ohe_headers', JSON.stringify(headers)); } catch { } }, [headers]);
 
   useEffect(() => {
     if (!auth) return;
