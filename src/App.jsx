@@ -143,6 +143,64 @@ export default function App() {
   useEffect(() => { localStorage.setItem('ohe_sheetName', sheetName); }, [sheetName]);
   useEffect(() => { try { localStorage.setItem('ohe_headers', JSON.stringify(headers)); } catch { } }, [headers]);
 
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  const fetchFromGoogleSheets = async () => {
+    if (!scriptUrl) return;
+    setIsSyncing(true);
+    try {
+      const payload = { action: 'get_all_data' };
+      const params = new URLSearchParams({ payload: JSON.stringify(payload) }).toString();
+
+      const response = await fetch(`${scriptUrl}?${params}`);
+      const result = await response.json();
+
+      if (result && result.status === 'success' && result.data) {
+        const labelToKeyMap = Object.entries(headers).reduce((acc, [k, v]) => { acc[v] = k; return acc; }, {});
+
+        const mappedRecords = result.data.map(sheetRow => {
+          let internalRow = { sheetName: sheetRow.sheetName, id: sheetRow.id };
+          for (const [key, val] of Object.entries(sheetRow)) {
+            if (key === 'sheetName' || key === 'id') continue;
+            const internalKey = labelToKeyMap[key] || key;
+            internalRow[internalKey] = val;
+          }
+          return internalRow;
+        });
+
+        setRecords(mappedRecords);
+        // Force update the options natively matched to whatever data was found globally!
+        const dbMaterials = new Set(DEFAULT_MATERIALS);
+        const dbUnits = new Set(DEFAULT_UNITS);
+        const dbStaff = new Set(DEFAULT_STAFF);
+
+        mappedRecords.forEach(r => {
+          if (r.materialName) dbMaterials.add(r.materialName);
+          if (r.unit) dbUnits.add(r.unit);
+          if (r.staffName) dbStaff.add(r.staffName);
+        });
+        setMaterialsList(Array.from(dbMaterials));
+        setUnitsList(Array.from(dbUnits));
+        setStaffList(Array.from(dbStaff));
+      } else {
+        console.error("Sheet sync failed", result);
+        setErrorMessage("Failed to read from Sheets");
+      }
+    } catch (e) {
+      console.error("Sheet read error", e);
+      setErrorMessage("CORS or Connection Error pulling from Google Sheets.");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // Attempt initial load from Sheet if plausible
+  useEffect(() => {
+    if (scriptUrl && scriptUrl.length > 30) { // arbitrary length check assuming they pasted a valid webhook
+      fetchFromGoogleSheets();
+    }
+  }, [scriptUrl]);
+
   useEffect(() => {
     if (!auth) return;
     const initAuth = async () => {
@@ -661,11 +719,11 @@ export default function App() {
                   {materialsList.map(m => <option key={m} value={m}>{m}</option>)}
                 </select>
                 <button
-                  onClick={generateReport}
-                  disabled={displayedRecords.length === 0}
-                  className="flex items-center justify-center px-4 py-2 bg-purple-100 hover:bg-purple-200 text-purple-700 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors h-10"
+                  onClick={fetchFromGoogleSheets}
+                  disabled={isSyncing}
+                  className="flex items-center justify-center px-4 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors h-10"
                 >
-                  <FileText className="w-4 h-4 mr-2" /> ✨ Generate Summary
+                  <Loader2 className={`w-4 h-4 mr-2 ${isSyncing ? 'animate-spin' : ''}`} /> Sync Sheets
                 </button>
                 <button onClick={() => setShowSettings(true)} className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg h-10 w-10 flex justify-center items-center"><Settings className="w-5 h-5" /></button>
                 <button onClick={exportToCSV} className="flex-1 sm:flex-none flex items-center justify-center px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-sm font-medium h-10"><Download className="w-4 h-4 mr-2" /> Export</button>
