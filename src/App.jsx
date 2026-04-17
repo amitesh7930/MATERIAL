@@ -100,6 +100,7 @@ export default function App() {
   const [sheetName, setSheetName] = useState('Sheet1');
 
   const [viewMode, setViewMode] = useState('current');
+  const [filterMaterial, setFilterMaterial] = useState('');
 
   const [smartText, setSmartText] = useState("");
   const [isSmartLoading, setIsSmartLoading] = useState(false);
@@ -198,7 +199,10 @@ export default function App() {
     return () => { unsubscribe(); unsubSettings(); };
   }, [user]);
 
-  const displayedRecords = viewMode === 'all' ? records : records.filter(r => (r.sheetName || 'Sheet1') === sheetName);
+  let displayedRecords = viewMode === 'all' ? records : records.filter(r => (r.sheetName || 'Sheet1') === sheetName);
+  if (filterMaterial) {
+    displayedRecords = displayedRecords.filter(r => r.materialName === filterMaterial);
+  }
 
   const handleSmartEntry = async () => {
     if (!smartText.trim()) return;
@@ -279,33 +283,28 @@ export default function App() {
         const addedDocRef = await addDoc(recordsRef, newRecord);
         newRecord.id = addedDocRef.id;
       } else {
-        // Fallback if not logged into Firebase: simply update local UI state immediately
         setRecords(prev => [newRecord, ...prev]);
       }
 
       if (scriptUrl) {
-        const params = new URLSearchParams({
+        const payload = {
           action: 'add',
           sheetName: sheetName,
           id: newRecord.id,
-          date: formData.date,
-          materialName: formData.materialName,
-          quantity: formData.quantity,
-          unit: formData.unit,
-          location: formData.location,
-          staffName: formData.staffName,
-          h_sno: headers.sno,
-          h_date: headers.date,
-          h_mat: headers.materialName,
-          h_qty: headers.quantity,
-          h_unit: headers.unit,
-          h_loc: headers.location,
-          h_staff: headers.staffName
-        }).toString();
+          fields: headers,
+          data: newRecord
+        };
+        const params = new URLSearchParams({ payload: JSON.stringify(payload) }).toString();
         fetch(`${scriptUrl}?${params}`, { method: 'GET', mode: 'no-cors' }).catch(e => console.error("Sheet Sync:", e));
       }
 
-      setFormData(prev => ({ ...prev, materialName: '', quantity: '', location: '', staffName: '' }));
+      // Reset standard and custom fields except date, sno, unit
+      const baseReset = { materialName: '', quantity: '', location: '', staffName: '' };
+      Object.keys(headers).filter(k => !['sno', 'date', 'unit'].includes(k)).forEach(k => {
+        baseReset[k] = '';
+      });
+      setFormData(prev => ({ ...prev, ...baseReset }));
+
       setShowSuccess(true);
       setTimeout(() => setShowSuccess(false), 3000);
     } catch (e) {
@@ -326,7 +325,8 @@ export default function App() {
       }
 
       if (scriptUrl) {
-        const params = new URLSearchParams({ action: 'delete', id: id, sheetName: targetSheet }).toString();
+        const payload = { action: 'delete', id: id, sheetName: targetSheet };
+        const params = new URLSearchParams({ payload: JSON.stringify(payload) }).toString();
         fetch(`${scriptUrl}?${params}`, { method: 'GET', mode: 'no-cors' }).catch(e => console.error("Delete Sync:", e));
       }
     } catch (e) {
@@ -335,16 +335,73 @@ export default function App() {
     }
   };
 
+  const handleClearAll = async () => {
+    if (displayedRecords.length === 0) return;
+    if (!window.confirm(`Are you sure you want to completely clear ALL data from ${viewMode === 'all' ? 'ALL SHEETS' : sheetName}? This cannot be undone.`)) return;
+
+    try {
+      const recordsToDelete = displayedRecords;
+      setRecords(prev => prev.filter(r => !recordsToDelete.includes(r)));
+
+      // Delete from Firebase
+      if (user && db) {
+        for (const r of recordsToDelete) {
+          deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'records', r.id)).catch(console.error);
+        }
+      }
+
+      // Sync to Google Sheets
+      if (scriptUrl) {
+        if (viewMode === 'all') {
+          const uniqueSheets = [...new Set(recordsToDelete.map(r => r.sheetName || 'Sheet1'))];
+          uniqueSheets.forEach(sName => {
+            const payload = { action: 'clear', sheetName: sName };
+            const params = new URLSearchParams({ payload: JSON.stringify(payload) }).toString();
+            fetch(`${scriptUrl}?${params}`, { method: 'GET', mode: 'no-cors' }).catch(e => console.error(e));
+          });
+        } else {
+          const payload = { action: 'clear', sheetName: sheetName };
+          const params = new URLSearchParams({ payload: JSON.stringify(payload) }).toString();
+          fetch(`${scriptUrl}?${params}`, { method: 'GET', mode: 'no-cors' }).catch(e => console.error(e));
+        }
+      }
+    } catch (e) {
+      console.error(e);
+      setErrorMessage("Failed to clear data.");
+    }
+  };
+
   const exportToCSV = () => {
     if (displayedRecords.length === 0) return;
 
     const isConsolidated = viewMode === 'all';
-    const csvHeaders = [headers.sno, headers.date, isConsolidated ? "Source Sheet" : null, headers.materialName, headers.quantity, headers.unit, headers.location, headers.staffName].filter(Boolean);
+
+    // Dynamically build CSV headers based on allowed fields keys
+    const csvHeaders = [];
+    if (headers.sno) csvHeaders.push(headers.sno);
+    if (headers.date) csvHeaders.push(headers.date);
+    if (isConsolidated) csvHeaders.push("Source Sheet");
+    if (headers.materialName) csvHeaders.push(headers.materialName);
+    if (headers.quantity) csvHeaders.push(headers.quantity);
+    if (headers.unit) csvHeaders.push(headers.unit);
+    if (headers.location) csvHeaders.push(headers.location);
+    if (headers.staffName) csvHeaders.push(headers.staffName);
+
+    const customKeys = Object.keys(headers).filter(k => !['sno', 'date', 'materialName', 'quantity', 'unit', 'location', 'staffName'].includes(k));
+    customKeys.forEach(k => csvHeaders.push(headers[k]));
 
     const dataRows = displayedRecords.map((r, i) => {
-      const row = [`"${i + 1}"`, `"${r.date || ''}"`];
+      const row = [];
+      if (headers.sno) row.push(`"${i + 1}"`);
+      if (headers.date) row.push(`"${r.date || ''}"`);
       if (isConsolidated) row.push(`"${r.sheetName || 'Sheet1'}"`);
-      row.push(`"${r.materialName || ''}"`, `"${r.quantity || ''}"`, `"${r.unit || ''}"`, `"${r.location || ''}"`, `"${r.staffName || ''}"`);
+      if (headers.materialName) row.push(`"${r.materialName || ''}"`);
+      if (headers.quantity) row.push(`"${r.quantity || ''}"`);
+      if (headers.unit) row.push(`"${r.unit || ''}"`);
+      if (headers.location) row.push(`"${r.location || ''}"`);
+      if (headers.staffName) row.push(`"${r.staffName || ''}"`);
+
+      customKeys.forEach(k => row.push(`"${r[k] || ''}"`));
       return row;
     });
 
@@ -354,7 +411,6 @@ export default function App() {
     link.href = URL.createObjectURL(blob);
     link.download = `OHE_Data_${isConsolidated ? 'Consolidated' : sheetName}.csv`;
     link.click();
-    window.open('https://docs.google.com/spreadsheets/d/1x2sp1fMGTmcEzWZxZ_rFbBrtoMlvwtSwyJ44RUEBlx8/edit?usp=sharing', '_blank');
   };
 
   const saveSettings = async () => {
@@ -428,83 +484,104 @@ export default function App() {
                 <PlusCircle className="w-5 h-5 mr-2 text-blue-500" /> New Entry
               </h2>
               <form onSubmit={handleSubmit} className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-slate-600 mb-1">{headers.date}</label>
+                {headers.date && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-600 mb-1">{headers.date}</label>
+                    <div className="flex space-x-2">
+                      <input type={isManualDate ? "text" : "date"} name="date" value={formData.date} onChange={handleChange} placeholder="DD-MM-YYYY" className="flex-1 p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required />
+                      <button type="button" onClick={() => setIsManualDate(!isManualDate)} className="p-2.5 bg-slate-100 border border-slate-200 rounded-lg text-slate-600">
+                        {isManualDate ? <Calendar className="w-5 h-5" /> : <Keyboard className="w-5 h-5" />}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {headers.materialName && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-600 mb-1">{headers.materialName}</label>
+                    <div className="relative">
+                      <input type="text" name="materialName" value={formData.materialName} onChange={handleChange} onFocus={() => setIsMaterialFocused(true)} onBlur={() => setTimeout(() => setIsMaterialFocused(false), 200)} placeholder="Search material..." className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required autoComplete="off" />
+                      {isMaterialFocused && formData.materialName && materialsList.filter(m => m.toLowerCase().includes((formData.materialName || "").toLowerCase()) && m !== formData.materialName).length > 0 && (
+                        <ul className="absolute z-10 w-full bg-white border border-slate-200 mt-1 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                          {materialsList.filter(m => m.toLowerCase().includes((formData.materialName || "").toLowerCase()) && m !== formData.materialName).map((m, i) => (
+                            <li key={i} onMouseDown={() => setFormData(p => ({ ...p, materialName: m }))} className="p-2.5 hover:bg-blue-50 cursor-pointer text-sm border-b border-slate-50">{m}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {(headers.quantity || headers.unit) && (
                   <div className="flex space-x-2">
-                    <input type={isManualDate ? "text" : "date"} name="date" value={formData.date} onChange={handleChange} placeholder="DD-MM-YYYY" className="flex-1 p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required />
-                    <button type="button" onClick={() => setIsManualDate(!isManualDate)} className="p-2.5 bg-slate-100 border border-slate-200 rounded-lg text-slate-600">
-                      {isManualDate ? <Calendar className="w-5 h-5" /> : <Keyboard className="w-5 h-5" />}
-                    </button>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-slate-600 mb-1">{headers.materialName}</label>
-                  <div className="relative">
-                    <input type="text" name="materialName" value={formData.materialName} onChange={handleChange} onFocus={() => setIsMaterialFocused(true)} onBlur={() => setTimeout(() => setIsMaterialFocused(false), 200)} placeholder="Search material..." className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required autoComplete="off" />
-                    {isMaterialFocused && formData.materialName && materialsList.filter(m => m.toLowerCase().includes((formData.materialName || "").toLowerCase()) && m !== formData.materialName).length > 0 && (
-                      <ul className="absolute z-10 w-full bg-white border border-slate-200 mt-1 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                        {materialsList.filter(m => m.toLowerCase().includes((formData.materialName || "").toLowerCase()) && m !== formData.materialName).map((m, i) => (
-                          <li key={i} onMouseDown={() => setFormData(p => ({ ...p, materialName: m }))} className="p-2.5 hover:bg-blue-50 cursor-pointer text-sm border-b border-slate-50">{m}</li>
-                        ))}
-                      </ul>
+                    {headers.quantity && (
+                      <div className="flex-1">
+                        <label className="block text-sm font-medium text-slate-600 mb-1">{headers.quantity}</label>
+                        <input type="number" name="quantity" value={formData.quantity} onChange={handleChange} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required />
+                      </div>
+                    )}
+                    {headers.unit && (
+                      <div className="w-28 relative">
+                        <label className="block text-sm font-medium text-slate-600 mb-1">{headers.unit}</label>
+                        <input
+                          type="text"
+                          name="unit"
+                          value={formData.unit}
+                          onChange={handleChange}
+                          onFocus={(e) => { setIsUnitFocused(true); e.target.select(); }}
+                          onBlur={() => setTimeout(() => setIsUnitFocused(false), 200)}
+                          placeholder="Type..."
+                          className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                          required
+                          autoComplete="off"
+                        />
+                        {isUnitFocused && (
+                          <ul className="absolute z-10 w-32 right-0 bg-white border border-slate-200 mt-1 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                            {(unitsList.includes(formData.unit) ? unitsList : unitsList.filter(u => u.toLowerCase().includes((formData.unit || "").toLowerCase()))).map((u, i) => (
+                              <li
+                                key={i}
+                                onMouseDown={(e) => { e.preventDefault(); setFormData(p => ({ ...p, unit: u })); setIsUnitFocused(false); }}
+                                className="p-2.5 hover:bg-blue-50 cursor-pointer text-sm border-b border-slate-50 text-slate-700"
+                              >
+                                {u}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
                     )}
                   </div>
-                </div>
+                )}
 
-                <div className="flex space-x-2">
-                  <div className="flex-1">
-                    <label className="block text-sm font-medium text-slate-600 mb-1">{headers.quantity}</label>
-                    <input type="number" name="quantity" value={formData.quantity} onChange={handleChange} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required />
+                {headers.location && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-600 mb-1">{headers.location}</label>
+                    <input type="text" name="location" value={formData.location} onChange={handleChange} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required />
                   </div>
-                  <div className="w-28 relative">
-                    <label className="block text-sm font-medium text-slate-600 mb-1">{headers.unit}</label>
-                    <input
-                      type="text"
-                      name="unit"
-                      value={formData.unit}
-                      onChange={handleChange}
-                      onFocus={(e) => { setIsUnitFocused(true); e.target.select(); }}
-                      onBlur={() => setTimeout(() => setIsUnitFocused(false), 200)}
-                      placeholder="Type..."
-                      className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-                      required
-                      autoComplete="off"
-                    />
-                    {isUnitFocused && (
-                      <ul className="absolute z-10 w-32 right-0 bg-white border border-slate-200 mt-1 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                        {(unitsList.includes(formData.unit) ? unitsList : unitsList.filter(u => u.toLowerCase().includes((formData.unit || "").toLowerCase()))).map((u, i) => (
-                          <li
-                            key={i}
-                            onMouseDown={(e) => { e.preventDefault(); setFormData(p => ({ ...p, unit: u })); setIsUnitFocused(false); }}
-                            className="p-2.5 hover:bg-blue-50 cursor-pointer text-sm border-b border-slate-50 text-slate-700"
-                          >
-                            {u}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                </div>
+                )}
 
-                <div>
-                  <label className="block text-sm font-medium text-slate-600 mb-1">{headers.location}</label>
-                  <input type="text" name="location" value={formData.location} onChange={handleChange} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-slate-600 mb-1">{headers.staffName}</label>
-                  <div className="relative">
-                    <input type="text" name="staffName" value={formData.staffName} onChange={handleChange} onFocus={() => setIsStaffFocused(true)} onBlur={() => setTimeout(() => setIsStaffFocused(false), 200)} placeholder="Search staff..." className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required autoComplete="off" />
-                    {isStaffFocused && formData.staffName && staffList.filter(s => s.toLowerCase().includes((formData.staffName || "").toLowerCase()) && s !== formData.staffName).length > 0 && (
-                      <ul className="absolute bottom-full mb-1 z-10 w-full bg-white border border-slate-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                        {staffList.filter(s => s.toLowerCase().includes((formData.staffName || "").toLowerCase()) && s !== formData.staffName).map((s, i) => (
-                          <li key={i} onMouseDown={() => setFormData(p => ({ ...p, staffName: s }))} className="p-2.5 hover:bg-blue-50 cursor-pointer text-sm border-b border-slate-50">{s}</li>
-                        ))}
-                      </ul>
-                    )}
+                {headers.staffName && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-600 mb-1">{headers.staffName}</label>
+                    <div className="relative">
+                      <input type="text" name="staffName" value={formData.staffName} onChange={handleChange} onFocus={() => setIsStaffFocused(true)} onBlur={() => setTimeout(() => setIsStaffFocused(false), 200)} placeholder="Search staff..." className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required autoComplete="off" />
+                      {isStaffFocused && formData.staffName && staffList.filter(s => s.toLowerCase().includes((formData.staffName || "").toLowerCase()) && s !== formData.staffName).length > 0 && (
+                        <ul className="absolute bottom-full mb-1 z-10 w-full bg-white border border-slate-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                          {staffList.filter(s => s.toLowerCase().includes((formData.staffName || "").toLowerCase()) && s !== formData.staffName).map((s, i) => (
+                            <li key={i} onMouseDown={() => setFormData(p => ({ ...p, staffName: s }))} className="p-2.5 hover:bg-blue-50 cursor-pointer text-sm border-b border-slate-50">{s}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
                   </div>
-                </div>
+                )}
+
+                {Object.keys(headers).filter(k => !['sno', 'date', 'materialName', 'quantity', 'unit', 'location', 'staffName'].includes(k)).map(key => (
+                  <div key={key}>
+                    <label className="block text-sm font-medium text-slate-600 mb-1">{headers[key]}</label>
+                    <input type="text" name={key} value={formData[key] || ''} onChange={handleChange} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" required />
+                  </div>
+                ))}
 
                 <button type="submit" className="w-full mt-4 bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 rounded-xl shadow-md transition-all">Save Record</button>
                 {showSuccess && <div className="p-3 bg-green-50 text-green-700 rounded-lg text-sm text-center font-medium border border-green-200 mt-2">Saved Successfully!</div>}
@@ -535,16 +612,23 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+              <div className="flex flex-wrap gap-2 w-full sm:w-auto items-center">
+                <select value={filterMaterial} onChange={(e) => setFilterMaterial(e.target.value)} className="p-2 border border-slate-200 rounded-lg text-sm bg-white text-slate-600 focus:ring-2 focus:ring-blue-500 outline-none h-10 w-40">
+                  <option value="">All Materials</option>
+                  {materialsList.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
                 <button
                   onClick={generateReport}
                   disabled={displayedRecords.length === 0}
-                  className="flex items-center justify-center px-4 py-2 bg-purple-100 hover:bg-purple-200 text-purple-700 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors"
+                  className="flex items-center justify-center px-4 py-2 bg-purple-100 hover:bg-purple-200 text-purple-700 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors h-10"
                 >
                   <FileText className="w-4 h-4 mr-2" /> ✨ Generate Summary
                 </button>
-                <button onClick={() => setShowSettings(true)} className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg"><Settings className="w-5 h-5" /></button>
-                <button onClick={exportToCSV} className="flex-1 sm:flex-none flex items-center justify-center px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-sm font-medium"><Download className="w-4 h-4 mr-2" /> Export</button>
+                <button onClick={() => setShowSettings(true)} className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg h-10 w-10 flex justify-center items-center"><Settings className="w-5 h-5" /></button>
+                <button onClick={exportToCSV} className="flex-1 sm:flex-none flex items-center justify-center px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-sm font-medium h-10"><Download className="w-4 h-4 mr-2" /> Export</button>
+                <button onClick={handleClearAll} disabled={displayedRecords.length === 0} title="Clear All Listed Data" className="flex-1 sm:flex-none flex items-center justify-center px-4 py-2 bg-red-100 hover:bg-red-200 text-red-700 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors h-10 ml-0 sm:ml-2 mt-2 sm:mt-0">
+                  <Trash2 className="w-4 h-4 mr-2" /> Clear All
+                </button>
               </div>
             </div>
 
@@ -552,22 +636,24 @@ export default function App() {
               <table className="w-full text-left border-collapse whitespace-nowrap">
                 <thead>
                   <tr className="bg-slate-50 text-slate-500 text-xs border-b border-slate-100 uppercase tracking-wider">
-                    <th className="p-4 font-bold w-12 text-center">{headers.sno}</th>
-                    <th className="p-4 font-bold">{headers.date}</th>
-                    {/* Extra Header for Consolidated View */}
+                    {headers.sno && <th className="p-4 font-bold w-12 text-center">{headers.sno}</th>}
+                    {headers.date && <th className="p-4 font-bold">{headers.date}</th>}
                     {viewMode === 'all' && <th className="p-4 font-bold text-purple-600">Source Sheet</th>}
-                    <th className="p-4 font-bold">{headers.materialName}</th>
-                    <th className="p-4 font-bold">{headers.quantity}</th>
-                    <th className="p-4 font-bold">{headers.location}</th>
-                    <th className="p-4 font-bold">{headers.staffName}</th>
+                    {headers.materialName && <th className="p-4 font-bold">{headers.materialName}</th>}
+                    {headers.quantity && <th className="p-4 font-bold">{headers.quantity}</th>}
+                    {headers.location && <th className="p-4 font-bold">{headers.location}</th>}
+                    {headers.staffName && <th className="p-4 font-bold">{headers.staffName}</th>}
+                    {Object.keys(headers).filter(k => !['sno', 'date', 'materialName', 'quantity', 'unit', 'location', 'staffName'].includes(k)).map(key => (
+                      <th key={key} className="p-4 font-bold">{headers[key]}</th>
+                    ))}
                     <th className="p-4 font-bold text-center">Action</th>
                   </tr>
                 </thead>
                 <tbody className="text-sm divide-y divide-slate-50">
                   {displayedRecords.map((r, i) => (
                     <tr key={r.id} className="hover:bg-slate-50/50">
-                      <td className="p-4 text-center text-slate-400 font-mono">{i + 1}</td>
-                      <td className="p-4 text-slate-600">{r.date}</td>
+                      {headers.sno && <td className="p-4 text-center text-slate-400 font-mono">{i + 1}</td>}
+                      {headers.date && <td className="p-4 text-slate-600">{r.date || ''}</td>}
                       {viewMode === 'all' && (
                         <td className="p-4">
                           <span className="bg-purple-100 text-purple-700 px-2 py-1 rounded text-xs font-semibold">
@@ -575,10 +661,13 @@ export default function App() {
                           </span>
                         </td>
                       )}
-                      <td className="p-4 font-semibold text-slate-700">{r.materialName}</td>
-                      <td className="p-4">{r.quantity} <span className="text-xs text-slate-400 uppercase">{r.unit}</span></td>
-                      <td className="p-4 text-slate-500">{r.location}</td>
-                      <td className="p-4 font-medium text-slate-600">{r.staffName}</td>
+                      {headers.materialName && <td className="p-4 font-semibold text-slate-700">{r.materialName || ''}</td>}
+                      {headers.quantity && <td className="p-4">{r.quantity || ''} {headers.unit && <span className="text-xs text-slate-400 uppercase">{r.unit || ''}</span>}</td>}
+                      {headers.location && <td className="p-4 text-slate-500">{r.location || ''}</td>}
+                      {headers.staffName && <td className="p-4 font-medium text-slate-600">{r.staffName || ''}</td>}
+                      {Object.keys(headers).filter(k => !['sno', 'date', 'materialName', 'quantity', 'unit', 'location', 'staffName'].includes(k)).map(key => (
+                        <td key={key} className="p-4">{r[key] || ''}</td>
+                      ))}
                       <td className="p-4 text-center">
                         <button onClick={() => handleDelete(r.id)} className="p-2 text-red-400 hover:bg-red-50 rounded-lg"><Trash2 className="w-4 h-4" /></button>
                       </td>
@@ -647,15 +736,34 @@ export default function App() {
               <hr className="border-slate-100" />
 
               <section>
-                <h4 className="text-sm font-bold text-slate-800 uppercase tracking-widest mb-4 flex items-center"><Edit3 className="w-4 h-4 mr-2" /> Label Customization</h4>
+                <div className="flex justify-between items-center mb-4">
+                  <h4 className="text-sm font-bold text-slate-800 uppercase tracking-widest flex items-center"><Edit3 className="w-4 h-4 mr-2" /> Label Customization</h4>
+                  <button onClick={() => {
+                    const newKey = `custom_${Date.now()}`;
+                    setTempSettings(prev => ({ ...prev, headers: { ...prev.headers, [newKey]: 'New Label' } }));
+                  }} className="text-blue-600 hover:text-blue-800 text-xs font-bold bg-blue-50 px-2 py-1 rounded flex items-center gap-1">
+                    <PlusCircle className="w-3 h-3" /> Add Label
+                  </button>
+                </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {Object.entries({ sno: 'S.No', date: 'Date', materialName: 'Material', quantity: 'Quantity', unit: 'Unit', location: 'Location', staffName: 'Staff' }).map(([key, label]) => (
-                    <div key={key}>
-                      <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">{label}</label>
-                      <input type="text" value={tempSettings.headers[key]} onChange={(e) => setTempSettings({
-                        ...tempSettings,
-                        headers: { ...tempSettings.headers, [key]: e.target.value }
-                      })} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm" />
+                  {Object.entries(tempSettings.headers).map(([key, label]) => (
+                    <div key={key} className="flex flex-col relative w-full">
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">{key === 'sno' ? 'S.No (Auto)' : label}</label>
+                      <div className="flex w-full space-x-2">
+                        <input type="text" value={label} onChange={(e) => setTempSettings({
+                          ...tempSettings,
+                          headers: { ...tempSettings.headers, [key]: e.target.value }
+                        })} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm" />
+                        {key !== 'sno' && (
+                          <button onClick={() => {
+                            const newH = { ...tempSettings.headers };
+                            delete newH[key];
+                            setTempSettings({ ...tempSettings, headers: newH });
+                          }} className="p-2.5 bg-red-50 text-red-500 rounded-lg shrink-0 hover:bg-red-100 flex justify-center items-center">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
